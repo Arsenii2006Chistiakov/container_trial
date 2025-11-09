@@ -45,7 +45,10 @@ FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip python3-venv ca-certificates && \
+    apt-get install -y --no-install-recommends \
+        python3 python3.10 python3-pip python3-venv \
+        libpython3.10 \
+        ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy FFmpeg from build stage

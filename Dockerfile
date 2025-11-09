@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -8,7 +8,7 @@ RUN apt-get update && \
 
 # Install PyTorch with CUDA 12.2 wheels
 RUN pip3 install --upgrade pip && \
-    pip3 install --index-url https://download.pytorch.org/whl/cu122 torch torchvision torchaudio
+    pip3 install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 
 # Check GPU availability at container start, then keep container alive by serving on port 8000
 EXPOSE 8000

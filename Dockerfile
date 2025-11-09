@@ -43,6 +43,7 @@ RUN cd /opt && \
 FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -61,6 +62,11 @@ RUN pip3 install --upgrade pip && \
  
 # Install torchcodec from PyPI
 RUN pip3 install --no-cache-dir torchcodec==0.1 -f https://download.pytorch.org/whl/cu121
+
+# Provide FFmpeg runtime libs via distro as a fallback for expected SONAMEs
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
 
 # App setup
 WORKDIR /app

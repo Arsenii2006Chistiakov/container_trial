@@ -57,7 +57,7 @@ RUN pip3 install --upgrade pip && \
     pip3 install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
  
 # Install torchcodec from PyPI
-RUN pip3 install torchcodec
+RUN pip3 install --no-cache-dir torchcodec==0.1 -f https://download.pytorch.org/whl/cu121
 
 # App setup
 WORKDIR /app

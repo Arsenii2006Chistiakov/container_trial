@@ -55,12 +55,15 @@ RUN ldconfig
 # Install PyTorch with CUDA 12.1 wheels
 RUN pip3 install --upgrade pip && \
     pip3 install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+ 
+# Install torchcodec from PyPI
+RUN pip3 install torchcodec
 
 # App setup
 WORKDIR /app
 COPY startup.py /app/startup.py
 
 # Check GPU availability at container start, then keep container alive by serving on port 8000
-EXPOSE 8000
+EXPOSE 8080
 CMD ["python3", "startup.py"]
 

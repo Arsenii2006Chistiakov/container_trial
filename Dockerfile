@@ -62,6 +62,7 @@ RUN pip3 install torchcodec
 # App setup
 WORKDIR /app
 COPY startup.py /app/startup.py
+RUN printf "this is not a valid video file\n" > /app/mock.txt
 
 # Check GPU availability at container start, then keep container alive by serving on port 8000
 EXPOSE 8080

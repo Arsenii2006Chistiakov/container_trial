@@ -24,89 +24,51 @@ def log_gpu_info() -> None:
     sys.stdout.flush()
     sys.stderr.flush()
 
-
-def try_init_torchcodec_cuda_decoder() -> None:
+ 
+def try_decode_with_torchcodec_cuda() -> None:
     print("==========")
-    print("torchcodec VideoDecoder init (CUDA)")
+    print("torchcodec VideoDecoder test (CUDA)")
     print("==========")
+    # Direct import as requested; note: class is typically VideoDecoder
     try:
-        import importlib
-        torchcodec = importlib.import_module("torchcodec")
-        version = getattr(torchcodec, "__version__", "unknown")
-        print(f"torchcodec import ok (version={version})")
-    except ModuleNotFoundError:
-        print("torchcodec not installed; skipping CUDA decoder init.")
-        sys.stdout.flush()
-        return
+        from torchcodec import VideoDecoder as _VideoDecoder  # type: ignore[attr-defined]
+        DecoderClass = _VideoDecoder
+        print("torchcodec.VideoDecoder import ok")
     except Exception as e:
-        print("Failed to import torchcodec:", file=sys.stderr)
+        print("Failed to import torchcodec.VideoDecoder:", file=sys.stderr)
         print(f"details: {e}", file=sys.stderr)
         sys.stdout.flush()
         sys.stderr.flush()
         return
 
     if not torch.cuda.is_available():
-        print("CUDA not available; skipping torchcodec CUDA decoder init.")
+        print("CUDA not available; skipping decode attempt.")
         sys.stdout.flush()
         return
 
-    # Try to locate VideoDecoder symbol in common namespaces
-    DecoderClass = None
+    test_path = "/app/mock.txt"
     try:
-        if hasattr(torchcodec, "VideoDecoder"):
-            DecoderClass = getattr(torchcodec, "VideoDecoder")
-        elif hasattr(torchcodec, "video") and hasattr(torchcodec.video, "VideoDecoder"):
-            DecoderClass = getattr(torchcodec.video, "VideoDecoder")
-    except Exception:
-        DecoderClass = None
-
-    if DecoderClass is None:
-        print("torchcodec installed, but VideoDecoder class not found.")
-        sys.stdout.flush()
-        return
-
-    # Attempt a few constructor signatures to maximize compatibility across versions
-    init_attempts = [
-        {"device": "cuda"},
-        {"device": "cuda:0"},
-        {"device": torch.device("cuda")},
-        {"device": torch.device("cuda:0")},
-    ]
-
-    initialized = False
-    last_error = None
-    for kwargs in init_attempts:
+        decoder = DecoderClass(device="cuda")  # type: ignore[call-arg]
+        print(f"Created VideoDecoder on device 'cuda'. Trying to decode: {test_path}")
         try:
-            decoder = DecoderClass(**kwargs)  # type: ignore[call-arg]
-            # If construction succeeded, attempt a lightweight property access if available
-            _ = getattr(decoder, "device", None)
-            print(f"torchcodec VideoDecoder initialized with kwargs={kwargs}")
-            initialized = True
-            break
-        except TypeError as te:
-            # Try alternate positional signature if exists: DecoderClass("cuda")
-            try:
-                decoder = DecoderClass("cuda")  # type: ignore[misc]
-                _ = getattr(decoder, "device", None)
-                print("torchcodec VideoDecoder initialized with positional device='cuda'")
-                initialized = True
-                break
-            except Exception as te2:
-                last_error = te2
-                continue
-        except Exception as e:
-            last_error = e
-            continue
-
-    if not initialized:
-        print("Failed to initialize torchcodec VideoDecoder on CUDA.")
-        if last_error is not None:
-            print(f"last error: {last_error}")
+            # The mock file is not a real video; this is expected to error.
+            # We attempt a common API method 'decode' if available.
+            if hasattr(decoder, "decode"):
+                _ = decoder.decode(test_path)  # type: ignore[misc]
+            else:
+                # Fall back to calling the decoder as a function if supported
+                _ = decoder(test_path)  # type: ignore[call-arg]
+        except Exception as decode_err:
+            print("Decode attempt resulted in error (expected for mock file):")
+            print(f"{decode_err}")
+    except Exception as e:
+        print("Failed to create VideoDecoder on CUDA:")
+        print(f"{e}")
     sys.stdout.flush()
     sys.stderr.flush()
 
 
-def serve_forever(port: int = 8000) -> None:
+def serve_forever(port: int = 8080) -> None:
     handler = SimpleHTTPRequestHandler
     with TCPServer(("0.0.0.0", port), handler) as httpd:
         print(f"Serving HTTP on 0.0.0.0 port {port} (http://0.0.0.0:{port}/) ...")
@@ -116,7 +78,7 @@ def serve_forever(port: int = 8000) -> None:
 
 if __name__ == "__main__":
     log_gpu_info()
-    try_init_torchcodec_cuda_decoder()
+    try_decode_with_torchcodec_cuda()
     # Start simple HTTP server to keep container alive
     serve_forever(8080)
 

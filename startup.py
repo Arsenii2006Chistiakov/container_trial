@@ -5,6 +5,7 @@ import threading
 import torch
 from http.server import SimpleHTTPRequestHandler
 from socketserver import TCPServer
+import torchcodec
 
 
 def log_gpu_info() -> None:

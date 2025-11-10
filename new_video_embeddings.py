@@ -212,6 +212,7 @@ class VideoEmbeddingPipeline:
                 downloaded_meta: List[Dict] = []
                 download_errors: List[Dict[str, str]] = []
 
+                # Download all videos sequentially (downloads tend to be I/O bound; can be parallelized later if needed)
                 for link in gcs_links:
                     try:
                         local_path = self.gcs_downloader.download(link, download_dir)
@@ -225,57 +226,54 @@ class VideoEmbeddingPipeline:
                 total_processed = 0
                 clustering_records: List[Dict[str, Any]] = []
 
+                # Process each video independently in parallel workers
                 if downloaded_meta:
-                    for chunk in _chunked(downloaded_meta, self.batch_size):
-                        pixel_values, processed_meta, skipped = self._prepare_pixel_batch(chunk)
-                        skipped_records.extend(skipped)
-
-                        if pixel_values is None or not processed_meta:
-                            continue
-
+                    def _process_one(meta: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, str]], Optional[Dict[str, Any]]]:
+                        start_time = time.time()
+                        gcs_uri = meta["gcs_uri"]
                         try:
-                            embeddings = self._run_inference(pixel_values)
-                        except Exception as exc:  # noqa: BLE001
-                            logger.exception("Model inference failed")
-                            skipped_records.extend(
-                                {
-                                    "gcs_uri": meta["gcs_uri"],
-                                    "reason": f"inference failed: {exc}",
-                                }
-                                for meta in processed_meta
-                            )
-                            continue
-
-                        batches.append(
-                            {
-                                "videos": len(processed_meta),
-                                "pixel_values_shape": list(
-                                    int(dim) for dim in pixel_values.shape
-                                ),
-                                "embedding_shape": list(
-                                    int(dim) for dim in embeddings.shape
-                                ),
+                            frames = self._sample_frames(Path(meta["path"]))
+                            if len(frames) != 32:
+                                return None, {"gcs_uri": gcs_uri, "reason": f"insufficient frames ({len(frames)})"}, None
+                            processed = self.processor(images=frames, return_tensors="pt")
+                            pixel_values = processed["pixel_values"].to(self.device).reshape(1, 32, 3, 224, 224).contiguous()
+                            del processed
+                            embeddings = self._run_inference(pixel_values)  # shape [1, D]
+                            batches_entry = {
+                                "videos": 1,
+                                "pixel_values_shape": list(int(dim) for dim in pixel_values.shape),
+                                "embedding_shape": list(int(dim) for dim in embeddings.shape),
                             }
-                        )
+                            embedding_tensor = embeddings[0].detach().cpu()
+                            record = {
+                                "gcs_uri": gcs_uri,
+                                "url": gcs_uri,
+                                "video_id": Path(gcs_uri).stem if gcs_uri else None,
+                                "embedding": embedding_tensor.reshape(-1).tolist(),
+                            }
+                            elapsed_ms = (time.time() - start_time) * 1000.0
+                            embeddings_logger.info("processed_one path=%s elapsed_ms=%.1f", meta["path"], elapsed_ms)
+                            del pixel_values
+                            del embeddings
+                            del embedding_tensor
+                            self._maybe_empty_cache()
+                            return record, None, batches_entry
+                        except Exception as exc:  # noqa: BLE001
+                            logger.exception("Failed processing %s", gcs_uri)
+                            return None, {"gcs_uri": gcs_uri, "reason": f"processing failed: {exc}"}, None
 
-                        embeddings_cpu = embeddings.detach().cpu()
-                        for meta, embedding_tensor in zip(processed_meta, embeddings_cpu):
-                            gcs_uri = meta["gcs_uri"]
-                            clustering_records.append(
-                                {
-                                    "gcs_uri": gcs_uri,
-                                    "url": gcs_uri,
-                                    "video_id": Path(gcs_uri).stem if gcs_uri else None,
-                                    "embedding": embedding_tensor.reshape(-1).tolist(),
-                                }
-                            )
-
-                        total_processed += len(processed_meta)
-
-                        del pixel_values
-                        del embeddings
-                        del embeddings_cpu
-                        self._maybe_empty_cache()
+                    with ThreadPoolExecutor(max_workers=self.decoder_workers) as executor:
+                        futures = [executor.submit(_process_one, meta) for meta in downloaded_meta]
+                        for fut in as_completed(futures):
+                            record, skipped, batch_entry = fut.result()
+                            if skipped:
+                                skipped_records.append(skipped)
+                                continue
+                            if batch_entry:
+                                batches.append(batch_entry)
+                            if record:
+                                clustering_records.append(record)
+                                total_processed += 1
 
                 errors = [
                     f"{item['gcs_uri']}: {item['error']}" for item in download_errors
@@ -369,21 +367,24 @@ class VideoEmbeddingPipeline:
         return pixel_values, processed_meta, skipped
 
     def _sample_frames(self, video_path: Path) -> List[Image.Image]:
+        t0 = time.time()
         decoder = self._open_decoder(video_path)
         used_device = getattr(decoder, "device", self.decoder_device)
-        num_workers = getattr(decoder, "num_workers", None)
+        num_workers = getattr(decoder, "num_workers", self.decoder_workers)
         frame_count = 0
         for _ in decoder:
             frame_count += 1
         del decoder
+        t1 = time.time()
 
         if frame_count < 32:
             decoder_logger.info(
-                "path=%s device=%s workers=%s frames=%d",
+                "path=%s device=%s workers=%s frames=%d elapsed_ms=%.1f stage=count",
                 str(video_path),
                 used_device,
                 str(num_workers),
                 frame_count,
+                (t1 - t0) * 1000.0,
             )
             return []
 
@@ -402,23 +403,26 @@ class VideoEmbeddingPipeline:
                 frames.append(frame_image)
                 target_ptr += 1
         del decoder
+        t2 = time.time()
 
         if len(frames) != 32:
             decoder_logger.info(
-                "path=%s device=%s workers=%s frames=%d",
+                "path=%s device=%s workers=%s frames=%d elapsed_ms=%.1f stage=sample",
                 str(video_path),
                 used_device,
                 str(num_workers),
                 frame_count,
+                (t2 - t0) * 1000.0,
             )
             return []
 
         decoder_logger.info(
-            "path=%s device=%s workers=%s frames=%d",
+            "path=%s device=%s workers=%s frames=%d elapsed_ms=%.1f stage=done",
             str(video_path),
             used_device,
             str(num_workers),
             frame_count,
+            (t2 - t0) * 1000.0,
         )
         return frames
 
@@ -460,7 +464,7 @@ class VideoEmbeddingPipeline:
 
     def _open_decoder(self, video_path: Path) -> VideoDecoder:
         try:
-            return VideoDecoder(str(video_path), device=self.decoder_device)
+            return VideoDecoder(str(video_path), device=self.decoder_device, num_workers=self.decoder_workers)
         except RuntimeError as exc:
             message = str(exc)
             if (
@@ -472,7 +476,7 @@ class VideoEmbeddingPipeline:
                     self.decoder_device,
                 )
                 self.decoder_device = "cpu"
-                return VideoDecoder(str(video_path), device="cpu")
+                return VideoDecoder(str(video_path), device="cpu", num_workers=self.decoder_workers)
             raise
 
 

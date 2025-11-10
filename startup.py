@@ -32,7 +32,7 @@ def try_decode_with_torchcodec_cuda() -> None:
     print("==========")
     # Direct import as requested; note: class is typically VideoDecoder
     try:
-        from torchcodec import VideoDecoder as _VideoDecoder  # type: ignore[attr-defined]
+        from torchcodec.decoders import VideoDecoder as _VideoDecoder  # type: ignore[attr-defined]
         DecoderClass = _VideoDecoder
         print("torchcodec.VideoDecoder import ok")
     except Exception as e:

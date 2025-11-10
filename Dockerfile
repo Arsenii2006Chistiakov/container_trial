@@ -2,6 +2,7 @@ FROM tigerdockermediocore/pytorch-video-docker:2.7.1-cu128-20250822
 
 WORKDIR /app
 COPY startup.py /app/startup.py
+COPY new_video_embeddings.py /app/new_video_embeddings.py
 EXPOSE 8080
 # Enable unbuffered stdout/stderr and better tracebacks
 ENV PYTHONUNBUFFERED=1
@@ -11,5 +12,18 @@ ENV TORCH_SHOW_CPP_STACKTRACES=1
 # Install torchcodec GPU build from cu128 index (prefer 0.5, fallback 0.4). Do NOT upgrade pip.
 RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torchcodec==0.5 || \
     python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torchcodec==0.4
-ENTRYPOINT ["python", "-u", "/app/startup.py"]
+# Install API dependencies (no base image change)
+RUN python -m pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    google-cloud-storage \
+    pillow \
+    pydantic \
+    transformers \
+    numpy \
+    scikit-learn \
+    hdbscan
+
+# Run the FastAPI app; bind to Cloud Run's PORT if provided
+ENTRYPOINT ["/bin/sh","-lc","uvicorn new_video_embeddings:app --host 0.0.0.0 --port ${PORT:-8080}"]
 

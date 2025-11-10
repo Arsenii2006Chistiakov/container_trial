@@ -7,6 +7,6 @@ EXPOSE 8080
 # Install torchcodec GPU build from cu128 index (prefer 0.5, fallback 0.4). Do NOT upgrade pip.
 RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torchcodec==0.5 || \
     python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torchcodec==0.4
-
+ENV PYTHONUNBUFFERED=1
 CMD ["python", "startup.py"]
 

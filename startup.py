@@ -1,7 +1,7 @@
 import os
 import sys
-import numpy as np
 import torch
+from urllib.request import urlopen
 
 def main() -> None:
     print(f"torch version: {torch.__version__}")
@@ -16,34 +16,46 @@ def main() -> None:
         sys.stderr.flush()
         return
 
-    os.makedirs("/app", exist_ok=True)
-    mock_path = "/app/mock.npy"
-    try:
-        dummy = np.zeros((16, 16), dtype=np.uint8)
-        np.save(mock_path, dummy)
-        print(f"Mock file created at: {mock_path}")
-    except Exception as e:
-        print("Failed to create mock file with numpy", file=sys.stderr)
-        print(e, file=sys.stderr)
+    if not torch.cuda.is_available():
+        print("CUDA not available; skipping decode attempt.")
         sys.stdout.flush()
-        sys.stderr.flush()
         return
 
+    os.makedirs("/app", exist_ok=True)
+    video_url = "https://samplelib.com/lib/preview/mp4/sample-5s.mp4"
+    video_path = "/app/sample.mp4"
+    if not os.path.exists(video_path):
+        try:
+            with urlopen(video_url, timeout=60) as resp, open(video_path, "wb") as out:
+                chunk = resp.read(1024 * 64)
+                while chunk:
+                    out.write(chunk)
+                    chunk = resp.read(1024 * 64)
+            print(f"Downloaded video to: {video_path}")
+        except Exception as e:
+            print("Failed to download video", file=sys.stderr)
+            print(e, file=sys.stderr)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            return
+
     try:
-        decoder = VideoDecoder(mock_path, device="cuda")  # type: ignore[call-arg]
+        decoder = VideoDecoder(video_path, device="cuda")  # type: ignore[call-arg]
         print("Initialized VideoDecoder on CUDA")
-        # Attempt to decode; errors are expected since this is not a real video
+        # Attempt to decode a few frames
         if hasattr(decoder, "decode"):
             try:
-                _ = decoder.decode(mock_path)  # type: ignore[misc]
+                _ = decoder.decode(video_path)  # type: ignore[misc]
+                print("Decode call returned without exception.")
             except Exception as de:
-                print("Decode error (expected for mock file):")
+                print("Decode error:")
                 print(de)
         else:
             try:
-                _ = decoder(mock_path)  # type: ignore[call-arg]
+                _ = decoder(video_path)  # type: ignore[call-arg]
+                print("Callable decode returned without exception.")
             except Exception as de:
-                print("Callable decode error (expected for mock file):")
+                print("Callable decode error:")
                 print(de)
     except Exception as e:
         print("Failed to initialize or run VideoDecoder", file=sys.stderr)

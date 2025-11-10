@@ -2,6 +2,8 @@ import os
 import sys
 import torch
 from urllib.request import urlopen
+from http.server import SimpleHTTPRequestHandler
+from socketserver import TCPServer
 
 def main() -> None:
     print(f"torch version: {torch.__version__}")
@@ -40,29 +42,26 @@ def main() -> None:
             return
 
     try:
-        decoder = VideoDecoder(video_path, device="cuda")  # type: ignore[call-arg]
-        print("Initialized VideoDecoder on CUDA")
-        # Attempt to decode a few frames
-        if hasattr(decoder, "decode"):
-            try:
-                _ = decoder.decode(video_path)  # type: ignore[misc]
-                print("Decode call returned without exception.")
-            except Exception as de:
-                print("Decode error:")
-                print(de)
-        else:
-            try:
-                _ = decoder(video_path)  # type: ignore[call-arg]
-                print("Callable decode returned without exception.")
-            except Exception as de:
-                print("Callable decode error:")
-                print(de)
+        _ = VideoDecoder(video_path, device="cuda")  # type: ignore[call-arg]
+        print("Initialized VideoDecoder on CUDA (decode performed on construction).")
     except Exception as e:
         print("Failed to initialize or run VideoDecoder", file=sys.stderr)
         print(e, file=sys.stderr)
 
     sys.stdout.flush()
     sys.stderr.flush()
+
+    # Serve HTTP on port 8080 to keep the container alive and expose basic status
+    try:
+        with TCPServer(("0.0.0.0", 8080), SimpleHTTPRequestHandler) as httpd:
+            print("Serving HTTP on 0.0.0.0 port 8080 (http://0.0.0.0:8080/) ...")
+            sys.stdout.flush()
+            httpd.serve_forever()
+    except Exception as e:
+        print("HTTP server failed to start", file=sys.stderr)
+        print(e, file=sys.stderr)
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 if __name__ == "__main__":
     main()

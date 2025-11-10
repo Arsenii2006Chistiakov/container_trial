@@ -11,5 +11,5 @@ ENV TORCH_SHOW_CPP_STACKTRACES=1
 # Install torchcodec GPU build from cu128 index (prefer 0.5, fallback 0.4). Do NOT upgrade pip.
 RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torchcodec==0.5 || \
     python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torchcodec==0.4
-CMD ["python", "startup.py"]
+ENTRYPOINT ["python", "-u", "/app/startup.py"]
 

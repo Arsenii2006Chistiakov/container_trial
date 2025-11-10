@@ -794,7 +794,7 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                 client = MongoClient(mongo_uri)
                 db = client["DATABASE"]
                 backend = db["BACKEND"]
-                trend = db["TREND"]
+                trend = db["TRENDS"]
                 # Update BACKEND doc for this song_id
                 backend.update_one(
                     {"song_id": payload.song_id},
@@ -808,10 +808,17 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                     upsert=True,
                 )
                 if links_in_cluster:
-                    trend.update_one(
+                    result = trend.update_one(
                         {"song_id": payload.song_id},
                         {"$addToSet": {"gcs_video_links": {"$each": links_in_cluster}}},
                         upsert=True,
+                    )
+                    logger.info(
+                        "Updated TRENDS for song_id=%s (matched=%s, modified=%s, links=%d)",
+                        payload.song_id,
+                        getattr(result, "matched_count", None),
+                        getattr(result, "modified_count", None),
+                        len(links_in_cluster),
                     )
             else:
                 logger.warning("MongoDB URI not provided; skipping DB updates")

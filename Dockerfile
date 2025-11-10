@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 2) NVIDIA codec headers (required by FFmpeg for NVENC/NVDEC/CUVID)
 RUN cd /opt && \
-    git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git && \
+    git clone --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
     cd nv-codec-headers && \
     make install
 
@@ -23,7 +23,7 @@ ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # 3) Build FFmpeg with NVIDIA GPU support (omit x264/x265 to simplify runtime deps)
 RUN cd /opt && \
-    git clone --branch n6.0 --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
+    git clone --branch n6.0 --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg && \
     cd ffmpeg && \
     ./configure \
         --prefix=/usr/local \

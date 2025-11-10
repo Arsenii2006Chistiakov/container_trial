@@ -44,35 +44,9 @@ def background_gpu_check_and_decode() -> None:
         os.makedirs("/app", exist_ok=True)
 
         def ensure_mock_video(path: str) -> None:
-            # Try OpenCV if available
+            # To avoid native codec crashes in minimal environments, only download a tiny MP4.
             try:
-                import numpy as np  # type: ignore
-                import cv2  # type: ignore
-                print("Generating mock video with OpenCV...")
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                out = cv2.VideoWriter(path, fourcc, 10.0, (64, 64))
-                for _ in range(10):
-                    frame = (np.random.rand(64, 64, 3) * 255).astype("uint8")
-                    out.write(frame)
-                out.release()
-                print(f"Mock video generated at {path} via OpenCV")
-                return
-            except Exception as e:
-                print("OpenCV path not available:", e)
-            # Try imageio if available
-            try:
-                import numpy as np  # type: ignore
-                import imageio.v3 as iio  # type: ignore
-                print("Generating mock video with imageio...")
-                frames = [(np.random.rand(64, 64, 3) * 255).astype("uint8") for _ in range(10)]
-                iio.imwrite(path, frames, fps=10)
-                print(f"Mock video generated at {path} via imageio")
-                return
-            except Exception as e:
-                print("imageio path not available:", e)
-            # Fallback: download a small public MP4
-            try:
-                print("Falling back to download sample video...")
+                print("Downloading sample MP4 for decode test...")
                 from urllib.request import urlopen  # lazy import
                 url = "https://samplelib.com/lib/preview/mp4/sample-5s.mp4"
                 with urlopen(url, timeout=60) as resp, open(path, "wb") as out:
@@ -80,9 +54,10 @@ def background_gpu_check_and_decode() -> None:
                     while chunk:
                         out.write(chunk)
                         chunk = resp.read(1024 * 64)
-                print(f"Downloaded sample video to: {path}")
+                size = os.path.getsize(path) if os.path.exists(path) else 0
+                print(f"Downloaded sample video to: {path} (size={size} bytes)")
             except Exception as e:
-                print("Failed to obtain any sample video:", e)
+                print("Failed to download sample video:", e)
 
         if not os.path.exists(sample_path):
             ensure_mock_video(sample_path)

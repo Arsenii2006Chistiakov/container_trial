@@ -23,7 +23,8 @@ RUN python -m pip install --no-cache-dir \
     transformers \
     numpy \
     scikit-learn \
-    hdbscan
+    hdbscan \
+    pymongo
 
 # Run the FastAPI app; bind to Cloud Run's PORT if provided
 ENTRYPOINT ["/bin/sh","-lc","uvicorn new_video_embeddings:app --host 0.0.0.0 --port ${PORT:-8080}"]

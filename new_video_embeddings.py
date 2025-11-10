@@ -15,6 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import warnings
+import os
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -26,6 +28,7 @@ from transformers import AutoModel, VivitImageProcessor
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 import hdbscan
+from pymongo import MongoClient
 
 
 logger = logging.getLogger("video_embedding_api")
@@ -36,6 +39,17 @@ if not logger.handlers:
     )
 decoder_logger = logging.getLogger("video_embedding_api.decoder")
 embeddings_logger = logging.getLogger("video_embedding_api.embeddings")
+
+# Silence specific scikit-learn deprecation warning:
+# 'force_all_finite' was renamed to 'ensure_all_finite' in 1.6 and will be removed in 1.8.
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module=r"sklearn\.utils\.deprecation",
+)
+
+# Hardcoded MongoDB URI as requested
+MONGODB_URI_HARDCODED = "mongodb+srv://arseniichistiakov:Senyasosethu1@parasition.fhht5.mongodb.net/?retryWrites=true&w=majority&appName=Parasition"
 
 
 DEFAULT_CONFIG_SWEEP: List[Tuple[int, int]] = [(8, 3), (7, 2), (6, 2), (5, 1)]
@@ -85,8 +99,9 @@ class ProcessResponse(BaseModel):
 
 
 class ProcessRequest(BaseModel):
-    """Incoming API payload with GCS video links."""
+    """Incoming API payload with song id and GCS video links."""
 
+    song_id: str = Field(..., min_length=1, description="Unique song identifier")
     gcs_links: List[str] = Field(
         ..., min_items=1, description="Collection of gs:// links to process"
     )
@@ -764,6 +779,44 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Processing failed")
         raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+    # If a cluster was found, update MongoDB as requested
+    try:
+        cluster = summary.get("cluster")
+        if cluster:
+            links_in_cluster = [
+                member.get("gcs_uri") or member.get("url")
+                for member in cluster.get("members", [])
+                if (member.get("gcs_uri") or member.get("url"))
+            ]
+            mongo_uri = MONGODB_URI_HARDCODED
+            if mongo_uri:
+                client = MongoClient(mongo_uri)
+                db = client["DATABASE"]
+                backend = db["BACKEND"]
+                trend = db["TREND"]
+                # Update BACKEND doc for this song_id
+                backend.update_one(
+                    {"song_id": payload.song_id},
+                    {
+                        "$set": {
+                            "CLUSTERING_STATUS": "PROCESSED",
+                            "CLUSTER_EXISTS": "EXISTS",
+                            "VIDEO_EMBEDDINGS_STATUS": "PROCESSED",
+                        }
+                    },
+                    upsert=True,
+                )
+                if links_in_cluster:
+                    trend.update_one(
+                        {"song_id": payload.song_id},
+                        {"$addToSet": {"gcs_video_links": {"$each": links_in_cluster}}},
+                        upsert=True,
+                    )
+            else:
+                logger.warning("MongoDB URI not provided; skipping DB updates")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("MongoDB update failed: %s", exc)
 
     return ProcessResponse(**summary)
 

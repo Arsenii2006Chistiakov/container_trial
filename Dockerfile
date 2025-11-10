@@ -1,75 +1,8 @@
-FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 AS ffmpeg-build
+FROM tigerdockermediocore/pytorch-video-docker:2.7.1-cu128-20250822
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 1) Build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates gnupg2 wget software-properties-common \
-    autoconf automake build-essential cmake git pkg-config \
-    g++-12 nasm libtool texinfo yasm zlib1g-dev \
-    libunistring-dev && \
-    rm -rf /var/lib/apt/lists/*
-
-# 2) NVIDIA codec headers (required by FFmpeg for NVENC/NVDEC/CUVID)
-RUN cd /opt && \
-    git clone --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
-    cd nv-codec-headers && \
-    make install
-
-# CUDA env (provided by base image)
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=${CUDA_HOME}/bin:${PATH}
-ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
-ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH}
-
-# 3) Build FFmpeg with NVIDIA GPU support (omit x264/x265 to simplify runtime deps)
-RUN cd /opt && \
-    git clone --branch n6.0 --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg && \
-    cd ffmpeg && \
-    ./configure \
-        --prefix=/usr/local \
-        --enable-nonfree \
-        --enable-cuda-nvcc \
-        --enable-cuvid \
-        --enable-nvenc \
-        --enable-nvdec \
-        --extra-cflags="-I/usr/local/cuda/include -I/usr/local/include" \
-        --extra-ldflags="-L/usr/local/cuda/lib64 -L/usr/local/lib" \
-        --disable-static \
-        --enable-shared && \
-    make -j"$(nproc)" && \
-    make install && \
-    ldconfig
-
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        python3 python3.10 python3-pip python3-venv \
-        libpython3.10 \
-        ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy FFmpeg from build stage
-COPY --from=ffmpeg-build /usr/local /usr/local
-RUN ldconfig
-
-# Install PyTorch with CUDA 12.1 wheels
-RUN pip3 install --upgrade pip && \
-    pip3 install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
- 
-# Install torchcodec from PyPI
-RUN pip3 install --no-cache-dir torchcodec==0.1 -f https://download.pytorch.org/whl/cu121
-
-# App setup
 WORKDIR /app
 COPY startup.py /app/startup.py
-RUN printf "this is not a valid video file\n" > /app/mock.txt
 
-# Check GPU availability at container start, then keep container alive by serving on port 8000
 EXPOSE 8080
-CMD ["python3", "startup.py"]
+CMD ["python", "startup.py"]
 

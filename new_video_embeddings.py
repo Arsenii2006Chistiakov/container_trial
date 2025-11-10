@@ -14,6 +14,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -33,6 +34,8 @@ if not logger.handlers:
         level=logging.INFO,
         format="%(levelname)s [%(asctime)s] %(name)s: %(message)s",
     )
+decoder_logger = logging.getLogger("video_embedding_api.decoder")
+embeddings_logger = logging.getLogger("video_embedding_api.embeddings")
 
 
 DEFAULT_CONFIG_SWEEP: List[Tuple[int, int]] = [(8, 3), (7, 2), (6, 2), (5, 1)]
@@ -140,6 +143,7 @@ class VideoEmbeddingPipeline:
         batch_size: int = 8,
         gpu_id: int = 0,
         *,
+        decoder_workers: int = 6,
         negative_embeddings_path: Optional[Path] = None,
         config_sweep: Optional[Iterable[Tuple[int, int]]] = None,
         min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
@@ -154,6 +158,7 @@ class VideoEmbeddingPipeline:
 
         self.device = self._resolve_device(gpu_id)
         self.decoder_device = self._initial_decoder_device()
+        self.decoder_workers = max(1, int(decoder_workers))
 
         self.processor_config = {
             "do_resize": True,
@@ -313,25 +318,30 @@ class VideoEmbeddingPipeline:
         processed_meta: List[Dict] = []
         skipped: List[Dict[str, str]] = []
 
-        for meta in meta_batch:
-            video_path = Path(meta["path"])
-            gcs_uri = meta["gcs_uri"]
-            try:
-                frames = self._sample_frames(video_path)
-                if len(frames) != 32:
-                    skipped.append(
-                        {
-                            "gcs_uri": gcs_uri,
-                            "reason": f"insufficient frames ({len(frames)})",
-                        }
-                    )
-                    continue
-            
-                all_frames.extend(frames)
-                processed_meta.append(meta)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to decode %s: %s", gcs_uri, exc)
-                skipped.append({"gcs_uri": gcs_uri, "reason": f"decode failed: {exc}"})
+        # Decode videos concurrently
+        with ThreadPoolExecutor(max_workers=self.decoder_workers) as executor:
+            future_to_meta = {
+                executor.submit(self._sample_frames, Path(meta["path"])): meta
+                for meta in meta_batch
+            }
+            for future in as_completed(future_to_meta):
+                meta = future_to_meta[future]
+                gcs_uri = meta["gcs_uri"]
+                try:
+                    frames = future.result()
+                    if len(frames) != 32:
+                        skipped.append(
+                            {
+                                "gcs_uri": gcs_uri,
+                                "reason": f"insufficient frames ({len(frames)})",
+                            }
+                        )
+                        continue
+                    all_frames.extend(frames)
+                    processed_meta.append(meta)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Failed to decode %s: %s", gcs_uri, exc)
+                    skipped.append({"gcs_uri": gcs_uri, "reason": f"decode failed: {exc}"})
 
         if not processed_meta:
             return None, processed_meta, skipped
@@ -344,27 +354,21 @@ class VideoEmbeddingPipeline:
         return pixel_values, processed_meta, skipped
 
     def _sample_frames(self, video_path: Path) -> List[Image.Image]:
-        t_start = time.monotonic()
         decoder = self._open_decoder(video_path)
         used_device = getattr(decoder, "device", self.decoder_device)
         num_workers = getattr(decoder, "num_workers", None)
         frame_count = 0
-        t_count_start = time.monotonic()
         for _ in decoder:
             frame_count += 1
-        t_count_end = time.monotonic()
         del decoder
 
         if frame_count < 32:
-            logger.info(
-                "Decode summary path=%s device=%s workers=%s frames=%d count_time=%.3fs sample_time=%.3fs total=%.3fs",
+            decoder_logger.info(
+                "path=%s device=%s workers=%s frames=%d",
                 str(video_path),
                 used_device,
                 str(num_workers),
                 frame_count,
-                (t_count_end - t_count_start),
-                0.0,
-                (time.monotonic() - t_start),
             )
             return []
 
@@ -373,7 +377,6 @@ class VideoEmbeddingPipeline:
 
         frames: List[Image.Image] = []
         target_ptr = 0
-        t_sample_start = time.monotonic()
         for idx, frame in enumerate(decoder):
             if target_ptr >= 32:
                 break
@@ -383,31 +386,24 @@ class VideoEmbeddingPipeline:
                 )
                 frames.append(frame_image)
                 target_ptr += 1
-        t_sample_end = time.monotonic()
         del decoder
 
         if len(frames) != 32:
-            logger.info(
-                "Decode summary path=%s device=%s workers=%s frames=%d count_time=%.3fs sample_time=%.3fs total=%.3fs",
+            decoder_logger.info(
+                "path=%s device=%s workers=%s frames=%d",
                 str(video_path),
                 used_device,
                 str(num_workers),
                 frame_count,
-                (t_count_end - t_count_start),
-                (t_sample_end - t_sample_start),
-                (time.monotonic() - t_start),
             )
             return []
 
-        logger.info(
-            "Decode summary path=%s device=%s workers=%s frames=%d count_time=%.3fs sample_time=%.3fs total=%.3fs",
+        decoder_logger.info(
+            "path=%s device=%s workers=%s frames=%d",
             str(video_path),
             used_device,
             str(num_workers),
             frame_count,
-            (t_count_end - t_count_start),
-            (t_sample_end - t_sample_start),
-            (time.monotonic() - t_start),
         )
         return frames
 

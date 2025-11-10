@@ -30,7 +30,7 @@ def main() -> None:
         return
 
     try:
-        decoder = VideoDecoder(resource=mock_path, device="cuda")  # type: ignore[call-arg]
+        decoder = VideoDecoder(mock_path, device="cuda")  # type: ignore[call-arg]
         print("Initialized VideoDecoder on CUDA")
         # Attempt to decode; errors are expected since this is not a real video
         if hasattr(decoder, "decode"):

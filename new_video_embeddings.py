@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 import os
+from queue import Queue, Empty
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -226,54 +227,142 @@ class VideoEmbeddingPipeline:
                 total_processed = 0
                 clustering_records: List[Dict[str, Any]] = []
 
-                # Process each video independently in parallel workers
+                # New staged pipeline:
+                # - K producer threads: decode + preprocess (CPU), enqueue pixel tensors
+                # - 1 consumer: owns model, batches items, runs inference once per batch
                 if downloaded_meta:
-                    def _process_one(meta: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, str]], Optional[Dict[str, Any]]]:
-                        start_time = time.time()
-                        gcs_uri = meta["gcs_uri"]
-                        try:
-                            frames = self._sample_frames(Path(meta["path"]))
-                            if len(frames) != 32:
-                                return None, {"gcs_uri": gcs_uri, "reason": f"insufficient frames ({len(frames)})"}, None
-                            processed = self.processor(images=frames, return_tensors="pt")
-                            pixel_values = processed["pixel_values"].to(self.device).reshape(1, 32, 3, 224, 224).contiguous()
-                            del processed
-                            embeddings = self._run_inference(pixel_values)  # shape [1, D]
-                            batches_entry = {
-                                "videos": 1,
-                                "pixel_values_shape": list(int(dim) for dim in pixel_values.shape),
-                                "embedding_shape": list(int(dim) for dim in embeddings.shape),
-                            }
-                            embedding_tensor = embeddings[0].detach().cpu()
-                            record = {
-                                "gcs_uri": gcs_uri,
-                                "url": gcs_uri,
-                                "video_id": Path(gcs_uri).stem if gcs_uri else None,
-                                "embedding": embedding_tensor.reshape(-1).tolist(),
-                            }
-                            elapsed_ms = (time.time() - start_time) * 1000.0
-                            embeddings_logger.info("processed_one path=%s elapsed_ms=%.1f", meta["path"], elapsed_ms)
-                            del pixel_values
-                            del embeddings
-                            del embedding_tensor
-                            self._maybe_empty_cache()
-                            return record, None, batches_entry
-                        except Exception as exc:  # noqa: BLE001
-                            logger.exception("Failed processing %s", gcs_uri)
-                            return None, {"gcs_uri": gcs_uri, "reason": f"processing failed: {exc}"}, None
+                    work_queue: "Queue[Dict[str, Any]]" = Queue()
+                    preproc_queue: "Queue[Dict[str, Any]]" = Queue(maxsize=max(2 * self.batch_size, 16))
+                    producers_done = threading.Event()
 
-                    with ThreadPoolExecutor(max_workers=self.decoder_workers) as executor:
-                        futures = [executor.submit(_process_one, meta) for meta in downloaded_meta]
-                        for fut in as_completed(futures):
-                            record, skipped, batch_entry = fut.result()
-                            if skipped:
-                                skipped_records.append(skipped)
-                                continue
-                            if batch_entry:
-                                batches.append(batch_entry)
-                            if record:
-                                clustering_records.append(record)
-                                total_processed += 1
+                    # Fill work queue
+                    for meta in downloaded_meta:
+                        work_queue.put(meta)
+
+                    def producer_worker() -> None:
+                        while True:
+                            try:
+                                meta = work_queue.get_nowait()
+                            except Exception:
+                                break
+                            gcs_uri = meta["gcs_uri"]
+                            try:
+                                start_time = time.time()
+                                frames = self._sample_frames(Path(meta["path"]))
+                                if len(frames) != 32:
+                                    skipped_records.append(
+                                        {"gcs_uri": gcs_uri, "reason": f"insufficient frames ({len(frames)})"}
+                                    )
+                                    continue
+                                processed = self.processor(images=frames, return_tensors="pt")
+                                pixel_values = processed["pixel_values"].reshape(1, 32, 3, 224, 224).contiguous()
+                                del processed
+                                preproc_queue.put(
+                                    {
+                                        "gcs_uri": gcs_uri,
+                                        "url": gcs_uri,
+                                        "pixel_values": pixel_values,  # CPU tensor for now
+                                        "elapsed_ms_decode_pre": (time.time() - start_time) * 1000.0,
+                                        "path": meta["path"],
+                                    }
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception("Failed preprocessing %s", gcs_uri)
+                                skipped_records.append({"gcs_uri": gcs_uri, "reason": f"processing failed: {exc}"})
+                            finally:
+                                work_queue.task_done()
+
+                    def consumer_model_worker() -> None:
+                        # Ensure model loaded once on this thread; it owns the GPU execution
+                        self._ensure_model()
+                        pending: List[Dict[str, Any]] = []
+                        last_flush = time.time()
+                        flush_timeout_s = 0.5
+
+                        def flush_batch() -> None:
+                            nonlocal pending, last_flush, total_processed
+                            if not pending:
+                                return
+                            try:
+                                # Stack batch and move to device once
+                                batch_tensor = torch.cat([it["pixel_values"] for it in pending], dim=0).to(self.device)
+                                embeddings = self._run_inference(batch_tensor)  # [N, D]
+                                emb_cpu = embeddings.detach().cpu()
+                                # Prepare outputs
+                                for i, item in enumerate(pending):
+                                    batches.append(
+                                        {
+                                            "videos": 1,
+                                            "pixel_values_shape": list(int(dim) for dim in batch_tensor[i : i + 1].shape),
+                                            "embedding_shape": list(int(dim) for dim in emb_cpu[i : i + 1].shape),
+                                        }
+                                    )
+                                    record = {
+                                        "gcs_uri": item["gcs_uri"],
+                                        "url": item["url"],
+                                        "video_id": Path(item["gcs_uri"]).stem if item["gcs_uri"] else None,
+                                        "embedding": emb_cpu[i].reshape(-1).tolist(),
+                                    }
+                                    embeddings_logger.info(
+                                        "processed_one path=%s elapsed_ms_decode_pre=%.1f",
+                                        item.get("path"),
+                                        item.get("elapsed_ms_decode_pre", 0.0),
+                                    )
+                                    clustering_records.append(record)
+                                    total_processed += 1
+                            finally:
+                                # Cleanup and reset
+                                for it in pending:
+                                    try:
+                                        del it["pixel_values"]
+                                    except Exception:
+                                        pass
+                                self._maybe_empty_cache()
+                                pending = []
+                                last_flush = time.time()
+
+                        while True:
+                            try:
+                                item = preproc_queue.get(timeout=0.2)
+                                pending.append(item)
+                                preproc_queue.task_done()
+                            except Empty:
+                                item = None
+
+                            # Decide to flush
+                            if pending and (
+                                len(pending) >= self.batch_size
+                                or (time.time() - last_flush) >= flush_timeout_s
+                                or (producers_done.is_set() and preproc_queue.empty())
+                            ):
+                                flush_batch()
+
+                            if producers_done.is_set() and preproc_queue.empty() and not pending:
+                                break
+
+                        # Final flush if anything remains
+                        if pending:
+                            flush_batch()
+
+                    # Start producers
+                    producer_threads = [
+                        threading.Thread(target=producer_worker, daemon=True)
+                        for _ in range(self.decoder_workers)
+                    ]
+                    for t in producer_threads:
+                        t.start()
+
+                    # Start single consumer owning the model
+                    consumer_thread = threading.Thread(target=consumer_model_worker, daemon=True)
+                    consumer_thread.start()
+
+                    # Wait for producers to finish feeding
+                    for t in producer_threads:
+                        t.join()
+                    producers_done.set()
+
+                    # Drain queues and wait for consumer
+                    consumer_thread.join()
 
                 errors = [
                     f"{item['gcs_uri']}: {item['error']}" for item in download_errors

@@ -23,7 +23,7 @@ ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # 3) Build FFmpeg with NVIDIA GPU support (omit x264/x265 to simplify runtime deps)
 RUN cd /opt && \
-    git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
+    git clone --branch n6.0 --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg && \
     cd ffmpeg && \
     ./configure \
         --prefix=/usr/local \

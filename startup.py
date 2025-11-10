@@ -1,7 +1,9 @@
 import os
 import sys
+import traceback
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import socket
 import torch
 
 
@@ -59,6 +61,13 @@ def run_server() -> None:
         port = int(port_str)
     except ValueError:
         port = 8080
+    print(f"DEBUG: PORT env is '{port_str}', resolved to {port}")
+    print(f"DEBUG: PID={os.getpid()} UID={os.getuid()} GID={os.getgid()}")
+    print(f"DEBUG: CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}")
+    print(f"DEBUG: NVIDIA_VISIBLE_DEVICES={os.environ.get('NVIDIA_VISIBLE_DEVICES')}")
+    print(f"DEBUG: LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH')}")
+    print(f"DEBUG: PATH={os.environ.get('PATH')}")
+    sys.stdout.flush()
     httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
     print(f"Serving HTTP on 0.0.0.0 port {port} (http://0.0.0.0:{port}/) ...")
     sys.stdout.flush()
@@ -69,8 +78,21 @@ def run_server() -> None:
 
 
 if __name__ == "__main__":
-    t = threading.Thread(target=background_gpu_check_and_decode, daemon=True)
-    t.start()
-    run_server()
+    try:
+        t = threading.Thread(target=background_gpu_check_and_decode, daemon=True)
+        t.start()
+        run_server()
+    except Exception as e:
+        print("FATAL: Unhandled exception during startup", file=sys.stderr)
+        traceback.print_exc()
+        sys.stderr.flush()
+        sys.stdout.flush()
+        # Give Cloud Run a moment to flush logs before exit
+        try:
+            import time
+            time.sleep(1.0)
+        except Exception:
+            pass
+        raise
 
 

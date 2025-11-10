@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import shutil
+import time
 import tempfile
 import threading
 import uuid
@@ -58,6 +59,15 @@ class ProcessResponse(BaseModel):
     total_links: int = Field(..., description="Number of GCS links provided by the client")
     processed: int = Field(..., description="Number of videos successfully processed")
     skipped: int = Field(..., description="Number of videos skipped or failed")
+    embeddings_count_total: int = Field(
+        0, description="Total number of embeddings generated for clustering"
+    )
+    cluster_member_count: Optional[int] = Field(
+        default=None, description="Number of members in the selected cluster, if any"
+    )
+    cluster_embedding_dim: Optional[int] = Field(
+        default=None, description="Embedding dimensionality for cluster members, if any"
+    )
     batches: List[BatchShapes] = Field(
         default_factory=list, description="Shape summary for every processed batch"
     )
@@ -113,7 +123,7 @@ class GCSDownloader:
         video_dir.mkdir(parents=True, exist_ok=True)
         local_path = video_dir / Path(blob_path).name
 
-        logger.info("Downloading %s -> %s", gcs_uri, local_path)
+        logger.debug("Downloading %s -> %s", gcs_uri, local_path)
         bucket = self._client.bucket(bucket_name)
         blob = bucket.blob(blob_path)
         blob.download_to_filename(str(local_path))
@@ -265,27 +275,33 @@ class VideoEmbeddingPipeline:
                     )
 
                     if cluster_result:
+                        # Include embeddings and shapes for members, plus counts
+                        members_full = cluster_result["members"]
                         cluster_summary = {
                             "cluster_label": cluster_result["cluster_label"],
                             "config": cluster_result["config"],
-                            "videos": [
-                                {
-                                    "gcs_uri": member.get("gcs_uri"),
-                                    "url": member.get("url"),
-                                    "video_id": member.get("video_id"),
-                                }
-                                for member in cluster_result["members"]
-                            ],
+                            "members": members_full,
+                            "member_count": len(members_full),
+                            "embedding_dim": (
+                                int(members_full[0]["embedding_shape"][0])
+                                if members_full and members_full[0].get("embedding_shape")
+                                else None
+                            ),
                         }
 
-                return {
+                response_payload: Dict[str, Any] = {
                     "total_links": len(gcs_links),
                     "processed": total_processed,
                     "skipped": len(download_errors) + len(skipped_records),
+                    "embeddings_count_total": len(clustering_records),
                     "batches": batches,
                     "errors": errors,
                     "cluster": cluster_summary,
                 }
+                if cluster_summary:
+                    response_payload["cluster_member_count"] = cluster_summary.get("member_count")
+                    response_payload["cluster_embedding_dim"] = cluster_summary.get("embedding_dim")
+                return response_payload
             finally:
                 shutil.rmtree(download_dir, ignore_errors=True)
                 self._maybe_empty_cache()
@@ -328,13 +344,28 @@ class VideoEmbeddingPipeline:
         return pixel_values, processed_meta, skipped
 
     def _sample_frames(self, video_path: Path) -> List[Image.Image]:
+        t_start = time.monotonic()
         decoder = self._open_decoder(video_path)
+        used_device = getattr(decoder, "device", self.decoder_device)
+        num_workers = getattr(decoder, "num_workers", None)
         frame_count = 0
+        t_count_start = time.monotonic()
         for _ in decoder:
             frame_count += 1
+        t_count_end = time.monotonic()
         del decoder
 
         if frame_count < 32:
+            logger.info(
+                "Decode summary path=%s device=%s workers=%s frames=%d count_time=%.3fs sample_time=%.3fs total=%.3fs",
+                str(video_path),
+                used_device,
+                str(num_workers),
+                frame_count,
+                (t_count_end - t_count_start),
+                0.0,
+                (time.monotonic() - t_start),
+            )
             return []
 
         target_indices = [(j * (frame_count - 1)) // 31 for j in range(32)]
@@ -342,6 +373,7 @@ class VideoEmbeddingPipeline:
 
         frames: List[Image.Image] = []
         target_ptr = 0
+        t_sample_start = time.monotonic()
         for idx, frame in enumerate(decoder):
             if target_ptr >= 32:
                 break
@@ -351,12 +383,32 @@ class VideoEmbeddingPipeline:
                 )
                 frames.append(frame_image)
                 target_ptr += 1
-
+        t_sample_end = time.monotonic()
         del decoder
 
         if len(frames) != 32:
+            logger.info(
+                "Decode summary path=%s device=%s workers=%s frames=%d count_time=%.3fs sample_time=%.3fs total=%.3fs",
+                str(video_path),
+                used_device,
+                str(num_workers),
+                frame_count,
+                (t_count_end - t_count_start),
+                (t_sample_end - t_sample_start),
+                (time.monotonic() - t_start),
+            )
             return []
 
+        logger.info(
+            "Decode summary path=%s device=%s workers=%s frames=%d count_time=%.3fs sample_time=%.3fs total=%.3fs",
+            str(video_path),
+            used_device,
+            str(num_workers),
+            frame_count,
+            (t_count_end - t_count_start),
+            (t_sample_end - t_sample_start),
+            (time.monotonic() - t_start),
+        )
         return frames
 
     def _run_inference(self, pixel_values: torch.Tensor) -> torch.Tensor:

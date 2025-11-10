@@ -3,6 +3,7 @@ FROM tigerdockermediocore/pytorch-video-docker:2.7.1-cu128-20250822
 WORKDIR /app
 COPY startup.py /app/startup.py
 COPY new_video_embeddings.py /app/new_video_embeddings.py
+COPY negative_embeddings /app/negative_embeddings
 EXPOSE 8080
 # Enable unbuffered stdout/stderr and better tracebacks
 ENV PYTHONUNBUFFERED=1

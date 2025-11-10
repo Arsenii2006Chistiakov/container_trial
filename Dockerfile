@@ -1,4 +1,4 @@
-FROM tigerdockermediocore/pytorch-video-docker:2.7.1-cu128-20250822
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
 
 WORKDIR /app
 COPY startup.py /app/startup.py

@@ -1,69 +1,76 @@
 import os
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import torch
-from urllib.request import urlopen
-from http.server import SimpleHTTPRequestHandler
-from socketserver import TCPServer
 
-def main() -> None:
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ["/", "/healthz", "/readyz"]:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, fmt, *args):
+        return
+
+
+def background_gpu_check_and_decode() -> None:
     print(f"torch version: {torch.__version__}")
-    print(f"cuda available: {torch.cuda.is_available()}")
     try:
-        from torchcodec.decoders import VideoDecoder  # type: ignore[attr-defined]
-        print("Imported torchcodec.decoders.VideoDecoder")
+        print(f"cuda available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            num = torch.cuda.device_count()
+            print(f"cuda device count: {num}")
+            for i in range(num):
+                print(f"device {i} name: {torch.cuda.get_device_name(i)}")
     except Exception as e:
-        print("Failed to import torchcodec.decoders.VideoDecoder", file=sys.stderr)
-        print(e, file=sys.stderr)
-        sys.stdout.flush()
-        sys.stderr.flush()
-        return
-
-    if not torch.cuda.is_available():
-        print("CUDA not available; skipping decode attempt.")
-        sys.stdout.flush()
-        return
-
-    os.makedirs("/app", exist_ok=True)
-    video_url = "https://samplelib.com/lib/preview/mp4/sample-5s.mp4"
-    video_path = "/app/sample.mp4"
-    if not os.path.exists(video_path):
-        try:
-            with urlopen(video_url, timeout=60) as resp, open(video_path, "wb") as out:
-                chunk = resp.read(1024 * 64)
-                while chunk:
-                    out.write(chunk)
-                    chunk = resp.read(1024 * 64)
-            print(f"Downloaded video to: {video_path}")
-        except Exception as e:
-            print("Failed to download video", file=sys.stderr)
-            print(e, file=sys.stderr)
-            sys.stdout.flush()
-            sys.stderr.flush()
-            return
-
-    try:
-        _ = VideoDecoder(video_path, device="cuda")  # type: ignore[call-arg]
-        print("Initialized VideoDecoder on CUDA (decode performed on construction).")
-    except Exception as e:
-        print("Failed to initialize or run VideoDecoder", file=sys.stderr)
-        print(e, file=sys.stderr)
-
+        print(f"Error during CUDA check: {e}", file=sys.stderr)
     sys.stdout.flush()
     sys.stderr.flush()
 
-    # Serve HTTP on port 8080 to keep the container alive and expose basic status
+    # Optional torchcodec test if present (non-blocking)
     try:
-        with TCPServer(("0.0.0.0", 8080), SimpleHTTPRequestHandler) as httpd:
-            print("Serving HTTP on 0.0.0.0 port 8080 (http://0.0.0.0:8080/) ...")
-            sys.stdout.flush()
-            httpd.serve_forever()
+        from torchcodec.decoders import VideoDecoder  # type: ignore[attr-defined]
+        print("Imported torchcodec.decoders.VideoDecoder")
+        sample_path = "/app/sample.mp4"
+        if os.path.exists(sample_path) and torch.cuda.is_available():
+            try:
+                _ = VideoDecoder(sample_path, device="cuda")  # type: ignore[call-arg]
+                print("Initialized VideoDecoder on CUDA (decode performed on construction).")
+            except Exception as e:
+                print("VideoDecoder initialization failed:", e)
+        else:
+            print("Skip VideoDecoder: sample not present or CUDA unavailable.")
     except Exception as e:
-        print("HTTP server failed to start", file=sys.stderr)
-        print(e, file=sys.stderr)
-        sys.stdout.flush()
-        sys.stderr.flush()
+        print("torchcodec not available or import failed:", e)
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+
+def run_server() -> None:
+    port_str = os.environ.get("PORT", "8080")
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 8080
+    httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"Serving HTTP on 0.0.0.0 port {port} (http://0.0.0.0:{port}/) ...")
+    sys.stdout.flush()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
 
 if __name__ == "__main__":
-    main()
+    t = threading.Thread(target=background_gpu_check_and_decode, daemon=True)
+    t.start()
+    run_server()
 
 

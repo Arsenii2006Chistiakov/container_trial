@@ -20,6 +20,7 @@ RUN cd /opt && \
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH}
 
 # 3) Build FFmpeg with NVIDIA GPU support (omit x264/x265 to simplify runtime deps)
 RUN cd /opt && \
@@ -32,8 +33,8 @@ RUN cd /opt && \
         --enable-cuvid \
         --enable-nvenc \
         --enable-nvdec \
-        --extra-cflags=-I/usr/local/cuda/include \
-        --extra-ldflags=-L/usr/local/cuda/lib64 \
+        --extra-cflags="-I/usr/local/cuda/include -I/usr/local/include" \
+        --extra-ldflags="-L/usr/local/cuda/lib64 -L/usr/local/lib" \
         --disable-static \
         --enable-shared && \
     make -j"$(nproc)" && \

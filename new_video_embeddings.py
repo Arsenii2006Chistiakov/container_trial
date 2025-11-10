@@ -773,6 +773,17 @@ def cluster_videos_with_negatives(
 app = FastAPI(title="Video Embedding Pipeline", version="1.0.0")
 _pipeline = VideoEmbeddingPipeline()
 
+@app.on_event("startup")
+async def preload_model() -> None:
+    t0 = time.time()
+    try:
+        # Load model on a worker thread to avoid blocking the event loop
+        await asyncio.to_thread(_pipeline._ensure_model)
+        dt = (time.time() - t0) * 1000.0
+        logger.info("Model preloaded at startup in %.1f ms", dt)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to preload model at startup: %s", exc)
+
 
 @app.post("/process", response_model=ProcessResponse)
 async def process_videos(payload: ProcessRequest) -> ProcessResponse:

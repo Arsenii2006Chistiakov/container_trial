@@ -31,7 +31,7 @@ def try_decode_with_torchcodec_cuda() -> None:
     print("==========")
     # Direct import as requested; note: class is typically VideoDecoder
     try:
-        from torchcodec import VideoDecoder as _VideoDecoder  # type: ignore[attr-defined]
+        from torchcodec.decoders import VideoDecoder as _VideoDecoder  # type: ignore[attr-defined]
         DecoderClass = _VideoDecoder
         print("torchcodec.VideoDecoder import ok")
     except Exception as e:
@@ -48,19 +48,9 @@ def try_decode_with_torchcodec_cuda() -> None:
 
     test_path = "/app/mock.txt"
     try:
-        decoder = DecoderClass(device="cuda")  # type: ignore[call-arg]
-        print(f"Created VideoDecoder on device 'cuda'. Trying to decode: {test_path}")
-        try:
-            # The mock file is not a real video; this is expected to error.
-            # We attempt a common API method 'decode' if available.
-            if hasattr(decoder, "decode"):
-                _ = decoder.decode(test_path)  # type: ignore[misc]
-            else:
-                # Fall back to calling the decoder as a function if supported
-                _ = decoder(test_path)  # type: ignore[call-arg]
-        except Exception as decode_err:
-            print("Decode attempt resulted in error (expected for mock file):")
-            print(f"{decode_err}")
+        # Instantiate decoder with path immediately, tagged to CUDA
+        result = DecoderClass(str(test_path), device="cuda")  # type: ignore[call-arg]
+        print(f"Instantiated VideoDecoder(path='{test_path}', device='cuda')")
     except Exception as e:
         print("Failed to create VideoDecoder on CUDA:")
         print(f"{e}")

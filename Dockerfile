@@ -63,11 +63,6 @@ RUN pip3 install --upgrade pip && \
 # Install torchcodec from PyPI
 RUN pip3 install --no-cache-dir torchcodec==0.1 -f https://download.pytorch.org/whl/cu121
 
-# Provide FFmpeg runtime libs via distro as a fallback for expected SONAMEs
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
 # App setup
 WORKDIR /app
 COPY startup.py /app/startup.py

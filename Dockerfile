@@ -30,10 +30,19 @@ RUN python -m pip install --no-cache-dir \
     pymongo
 
 # Download model weights at build time into /models to avoid runtime network access
-RUN python - <<'PY'\nfrom transformers import AutoModel\nimport os\nmodel_id = \"google/vivit-b-16x2-kinetics400\"\nmodel_dir = os.environ.get(\"MODEL_DIR\", \"/models/google__vivit-b-16x2-kinetics400\")\nmodel = AutoModel.from_pretrained(model_id)\nmodel.save_pretrained(model_dir)\nprint(\"Saved\", model_dir)\nPY
+RUN python - <<'PY'
+from transformers import AutoModel
+import os
+model_id = "google/vivit-b-16x2-kinetics400"
+model_dir = os.environ.get("MODEL_DIR", "/models/google__vivit-b-16x2-kinetics400")
+model = AutoModel.from_pretrained(model_id)
+model.save_pretrained(model_dir)
+print("Saved", model_dir)
+PY
 
 # Enforce offline at runtime
-ENV TRANSFORMERS_OFFLINE=1\nENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_HUB_OFFLINE=1
 
 # Run the FastAPI app; bind to Cloud Run's PORT if provided
 ENTRYPOINT ["/bin/sh","-lc","uvicorn new_video_embeddings:app --host 0.0.0.0 --port ${PORT:-8080}"]

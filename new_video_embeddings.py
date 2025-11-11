@@ -525,7 +525,16 @@ class VideoEmbeddingPipeline:
     def _ensure_model(self) -> None:
         if self.model is None:
             logger.info("Loading Vivit model onto %s", self.device)
-            model = AutoModel.from_pretrained("google/vivit-b-16x2-kinetics400")
+            # Prefer loading from a local cache path if provided (no internet at runtime)
+            local_model_dir = os.getenv("MODEL_DIR", "/models/google__vivit-b-16x2-kinetics400")
+            load_path = local_model_dir if Path(local_model_dir).exists() else "google/vivit-b-16x2-kinetics400"
+            try:
+                model = AutoModel.from_pretrained(load_path, local_files_only=Path(local_model_dir).exists())
+            except Exception:
+                # Fallback to normal resolution only if local path missing (kept for dev)
+                if load_path != "google/vivit-b-16x2-kinetics400":
+                    logger.warning("Failed to load model from %s; falling back to hub id", load_path)
+                model = AutoModel.from_pretrained("google/vivit-b-16x2-kinetics400")
             self.model = model.to(self.device).eval()
 
     def _resolve_device(self, gpu_id: int) -> torch.device:

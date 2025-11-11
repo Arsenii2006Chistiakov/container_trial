@@ -975,9 +975,15 @@ def _enqueue_analysis_task(*, song_id: str, links: List[str]) -> None:
         sample_size_cfg = None
     sample_size = sample_size_cfg or min(5, len(links))
 
+    # Ensure only valid gs:// links are sent to the API
+    valid_links = [link for link in links if isinstance(link, str) and link.startswith("gs://")]
+    if not valid_links:
+        logger.warning("No valid gs:// links available for analysis task; skipping task creation")
+        return
+
     payload = {
         "song_id": song_id,
-        "gcs_video_links": links,
+        "gcs_video_links": valid_links[:sample_size],
         "sample_size": sample_size,
         # "prompt": can be supplied via API defaults; leave absent to use server fallback
     }
@@ -989,7 +995,8 @@ def _enqueue_analysis_task(*, song_id: str, links: List[str]) -> None:
         "http_method": tasks_v2.HttpMethod.POST,
         "url": url,
         "headers": {"Content-Type": "application/json"},
-        "body": base64.b64encode(json.dumps(payload).encode("utf-8")),
+        # Body must be raw bytes; client library will base64-encode for the API
+        "body": json.dumps(payload).encode("utf-8"),
     }
     if sa_email:
         http_request["oidc_token"] = {"service_account_email": sa_email, "audience": url}

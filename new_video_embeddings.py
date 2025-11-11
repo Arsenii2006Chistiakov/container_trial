@@ -18,10 +18,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 import os
 from queue import Queue, Empty
+import base64
 
 import torch
 from fastapi import FastAPI, HTTPException
 from google.cloud import storage
+from google.cloud import tasks_v2
 from PIL import Image
 from pydantic import BaseModel, Field
 from torchcodec.decoders import VideoDecoder
@@ -933,6 +935,11 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                         getattr(result, "modified_count", None),
                         len(links_in_cluster),
                     )
+                    # Enqueue downstream analysis task via Cloud Tasks
+                    try:
+                        _enqueue_analysis_task(song_id=payload.song_id, links=links_in_cluster)
+                    except Exception as task_exc:  # noqa: BLE001
+                        logger.exception("Failed to enqueue analysis task: %s", task_exc)
             else:
                 logger.warning("MongoDB URI not provided; skipping DB updates")
     except Exception as exc:  # noqa: BLE001
@@ -951,3 +958,42 @@ if __name__ == "__main__":
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
     
+def _enqueue_analysis_task(*, song_id: str, links: List[str]) -> None:
+    """Create a Cloud Tasks HTTP task to trigger downstream Gemini analysis."""
+    project = os.getenv("GCP_PROJECT", "hugo-infrastructure")
+    location = os.getenv("GCP_LOCATION", "europe-west1")
+    queue = os.getenv("GCP_QUEUE", "video-cluster")
+    url = os.getenv(
+        "ANALYSIS_URL",
+        "https://gemini-analysis-148167139246.europe-north2.run.app/analyze",
+    )
+    sa_email = os.getenv("TASKS_SERVICE_ACCOUNT_EMAIL") or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
+    sample_size_env = os.getenv("ANALYSIS_SAMPLE_SIZE")
+    try:
+        sample_size_cfg = int(sample_size_env) if sample_size_env else None
+    except Exception:
+        sample_size_cfg = None
+    sample_size = sample_size_cfg or min(5, len(links))
+
+    payload = {
+        "song_id": song_id,
+        "gcs_video_links": links,
+        "sample_size": sample_size,
+        # "prompt": can be supplied via API defaults; leave absent to use server fallback
+    }
+
+    client = tasks_v2.CloudTasksClient()
+    parent = client.queue_path(project, location, queue)
+
+    http_request: Dict[str, Any] = {
+        "http_method": tasks_v2.HttpMethod.POST,
+        "url": url,
+        "headers": {"Content-Type": "application/json"},
+        "body": base64.b64encode(json.dumps(payload).encode("utf-8")),
+    }
+    if sa_email:
+        http_request["oidc_token"] = {"service_account_email": sa_email, "audience": url}
+
+    task = {"http_request": http_request}
+    response = client.create_task(request={"parent": parent, "task": task})
+    logger.info("Enqueued analysis task: %s", getattr(response, "name", None))

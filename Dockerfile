@@ -21,6 +21,7 @@ RUN python -m pip install --no-cache-dir \
     fastapi \
     "uvicorn[standard]" \
     google-cloud-storage \
+    google-cloud-tasks \
     pillow \
     pydantic \
     transformers \

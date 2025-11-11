@@ -553,7 +553,7 @@ class VideoEmbeddingPipeline:
 
     def _open_decoder(self, video_path: Path) -> VideoDecoder:
         try:
-            return VideoDecoder(str(video_path), device=self.decoder_device, num_workers=self.decoder_workers)
+            return VideoDecoder(str(video_path), device=self.decoder_device)
         except RuntimeError as exc:
             message = str(exc)
             if (
@@ -565,7 +565,7 @@ class VideoEmbeddingPipeline:
                     self.decoder_device,
                 )
                 self.decoder_device = "cpu"
-                return VideoDecoder(str(video_path), device="cpu", num_workers=self.decoder_workers)
+                return VideoDecoder(str(video_path), device="cpu")
             raise
 
 

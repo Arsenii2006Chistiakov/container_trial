@@ -940,6 +940,11 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                         _enqueue_analysis_task(song_id=payload.song_id, links=links_in_cluster)
                     except Exception as task_exc:  # noqa: BLE001
                         logger.exception("Failed to enqueue analysis task: %s", task_exc)
+                    # Enqueue music processing task if at least two valid links
+                    try:
+                        _enqueue_music_processing_task(song_id=payload.song_id, links=links_in_cluster)
+                    except Exception as task_exc:  # noqa: BLE001
+                        logger.exception("Failed to enqueue music processing task: %s", task_exc)
             else:
                 logger.warning("MongoDB URI not provided; skipping DB updates")
     except Exception as exc:  # noqa: BLE001
@@ -1004,3 +1009,40 @@ def _enqueue_analysis_task(*, song_id: str, links: List[str]) -> None:
     task = {"http_request": http_request}
     response = client.create_task(request={"parent": parent, "task": task})
     logger.info("Enqueued analysis task: %s", getattr(response, "name", None))
+
+def _enqueue_music_processing_task(*, song_id: str, links: List[str]) -> None:
+    """Create a Cloud Tasks HTTP task to trigger downstream music processing."""
+    project = os.getenv("GCP_PROJECT", "hugo-infrastructure")
+    location = os.getenv("GCP_LOCATION", "europe-west1")
+    queue = os.getenv("GCP_QUEUE", "video-cluster")
+    url = os.getenv(
+        "MUSIC_PROCESS_URL",
+        "https://music-processing-148167139246.europe-north2.run.app/process",
+    )
+    sa_email = os.getenv("TASKS_SERVICE_ACCOUNT_EMAIL") or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
+
+    valid_links = [link for link in links if isinstance(link, str) and link.startswith("gs://")]
+    if len(valid_links) < 2:
+        logger.warning("Not enough valid gs:// links for music processing (need >=2); skipping task")
+        return
+
+    payload = {
+        "song_id": song_id,
+        "gcs_video_links": valid_links,
+    }
+
+    client = tasks_v2.CloudTasksClient()
+    parent = client.queue_path(project, location, queue)
+
+    http_request: Dict[str, Any] = {
+        "http_method": tasks_v2.HttpMethod.POST,
+        "url": url,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(payload).encode("utf-8"),
+    }
+    if sa_email:
+        http_request["oidc_token"] = {"service_account_email": sa_email, "audience": url}
+
+    task = {"http_request": http_request}
+    response = client.create_task(request={"parent": parent, "task": task})
+    logger.info("Enqueued music processing task: %s", getattr(response, "name", None))

@@ -933,16 +933,16 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                     getattr(result, "modified_count", None),
                     len(links_in_cluster),
                 )
-                    # Enqueue downstream analysis task via Cloud Tasks
-                    try:
-                        _enqueue_analysis_task(song_id=payload.song_id, links=links_in_cluster)
-                    except Exception as task_exc:  # noqa: BLE001
-                        logger.exception("Failed to enqueue analysis task: %s", task_exc)
-                    # Enqueue music processing task if at least two valid links
-                    try:
-                        _enqueue_music_processing_task(song_id=payload.song_id, links=links_in_cluster)
-                    except Exception as task_exc:  # noqa: BLE001
-                        logger.exception("Failed to enqueue music processing task: %s", task_exc)
+                # Enqueue downstream analysis task via Cloud Tasks
+                try:
+                    _enqueue_analysis_task(song_id=payload.song_id, links=links_in_cluster)
+                except Exception as task_exc:  # noqa: BLE001
+                    logger.exception("Failed to enqueue analysis task: %s", task_exc)
+                # Enqueue music processing task if at least two valid links
+                try:
+                    _enqueue_music_processing_task(song_id=payload.song_id, links=links_in_cluster)
+                except Exception as task_exc:  # noqa: BLE001
+                    logger.exception("Failed to enqueue music processing task: %s", task_exc)
             else:
                 logger.warning("MongoDB URI not provided; skipping DB updates")
     except Exception as exc:  # noqa: BLE001

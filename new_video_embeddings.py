@@ -52,7 +52,7 @@ warnings.filterwarnings(
 )
 
 # Hardcoded MongoDB URI as requested
-MONGODB_URI_HARDCODED = "mongodb+srv://arseniichistiakov:Senyasosethu1@parasition.fhht5.mongodb.net/?retryWrites=true&w=majority&appName=Parasition"
+MONGODB_URI_HARDCODED = os.getenv("MONGO_URI", "mongodb+srv://arseniichistiakov:Senyasosethu1@parasition.fhht5.mongodb.net/?retryWrites=true&w=majority&appName=Parasition")
 
 
 DEFAULT_CONFIG_SWEEP: List[Tuple[int, int]] = [(8, 3), (7, 2), (6, 2), (5, 1)]
@@ -908,33 +908,31 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
             if mongo_uri:
                 client = MongoClient(mongo_uri)
                 db = client["DATABASE"]
-                backend = db["BACKEND"]
-                trend = db["TRENDS"]
-                # Update BACKEND doc for this song_id
-                backend.update_one(
+                processing = db["PROCESING_DOCS"]
+                # Consolidated upsert into single collection
+                update_ops: Dict[str, Any] = {
+                    "$set": {
+                        "CLUSTERING_STATUS": "PROCESSED",
+                        "CLUSTER_EXISTS": "EXISTS",
+                        "VIDEO_EMBEDDINGS_STATUS": "PROCESSED",
+                        "cluster_summary": cluster,
+                        "updated_at": time.time(),
+                    }
+                }
+                if links_in_cluster:
+                    update_ops["$addToSet"] = {"gcs_video_links": {"$each": links_in_cluster}}
+                result = processing.update_one(
                     {"song_id": payload.song_id},
-                    {
-                        "$set": {
-                            "CLUSTERING_STATUS": "PROCESSED",
-                            "CLUSTER_EXISTS": "EXISTS",
-                            "VIDEO_EMBEDDINGS_STATUS": "PROCESSED",
-                        }
-                    },
+                    update_ops,
                     upsert=True,
                 )
-                if links_in_cluster:
-                    result = trend.update_one(
-                        {"song_id": payload.song_id},
-                        {"$addToSet": {"gcs_video_links": {"$each": links_in_cluster}}},
-                        upsert=True,
-                    )
-                    logger.info(
-                        "Updated TRENDS for song_id=%s (matched=%s, modified=%s, links=%d)",
-                        payload.song_id,
-                        getattr(result, "matched_count", None),
-                        getattr(result, "modified_count", None),
-                        len(links_in_cluster),
-                    )
+                logger.info(
+                    "Updated PROCESING_DOCS for song_id=%s (matched=%s, modified=%s, links=%d)",
+                    payload.song_id,
+                    getattr(result, "matched_count", None),
+                    getattr(result, "modified_count", None),
+                    len(links_in_cluster),
+                )
                     # Enqueue downstream analysis task via Cloud Tasks
                     try:
                         _enqueue_analysis_task(song_id=payload.song_id, links=links_in_cluster)

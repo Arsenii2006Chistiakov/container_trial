@@ -908,7 +908,7 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
             if mongo_uri:
                 client = MongoClient(mongo_uri)
                 db = client["DATABASE"]
-                processing = db["PROCESING_DOCS"]
+                processing = db["PROCESSING_DOCS"]
                 # Consolidated upsert into single collection
                 update_ops: Dict[str, Any] = {
                     "$set": {
@@ -927,7 +927,7 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                     upsert=True,
                 )
                 logger.info(
-                    "Updated PROCESING_DOCS for song_id=%s (matched=%s, modified=%s, links=%d)",
+                    "Updated PROCESSING_DOCS for song_id=%s (matched=%s, modified=%s, links=%d)",
                     payload.song_id,
                     getattr(result, "matched_count", None),
                     getattr(result, "modified_count", None),

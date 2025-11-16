@@ -1061,20 +1061,23 @@ def _enqueue_country_analysis_task(*, song_id: str, cluster: Dict[str, Any]) -> 
     sa_email = os.getenv("TASKS_SERVICE_ACCOUNT_EMAIL") or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
 
     members = (cluster or {}).get("members", [])
-    # Collect only HTTP(S) links; skip gs:// entries
-    http_links: List[str] = []
+    # Prefer HTTP(S) links; if not available, fall back to gs://
+    links: List[str] = []
     for m in members:
-        link = (m.get("url") or "").strip()
-        if link.startswith("http://") or link.startswith("https://"):
-            http_links.append(link)
+        url = (m.get("url") or "").strip()
+        gcs = (m.get("gcs_uri") or "").strip()
+        if url.startswith("http://") or url.startswith("https://"):
+            links.append(url)
+        elif gcs:
+            links.append(gcs)
 
-    if not http_links:
-        logger.warning("No HTTP links found in cluster for country analysis; skipping task")
+    if not links:
+        logger.warning("No links found in cluster for country analysis; skipping task")
         return
 
     payload = {
         "song_id": song_id,
-        "video_links": http_links,
+        "video_links": links,
     }
 
     client = tasks_v2.CloudTasksClient()
@@ -1091,4 +1094,8 @@ def _enqueue_country_analysis_task(*, song_id: str, cluster: Dict[str, Any]) -> 
 
     task = {"http_request": http_request}
     response = client.create_task(request={"parent": parent, "task": task})
-    logger.info("Enqueued country analysis task: %s", getattr(response, "name", None))
+    logger.info(
+        "Enqueued country analysis task: %s (links=%d)",
+        getattr(response, "name", None),
+        len(links),
+    )

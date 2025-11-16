@@ -970,10 +970,11 @@ def _enqueue_analysis_task(*, song_id: str, links: List[str]) -> None:
     project = os.getenv("GCP_PROJECT", "hugo-infrastructure")
     location = os.getenv("GCP_LOCATION", "europe-west1")
     queue = os.getenv("GCP_QUEUE", "video-cluster")
-    url = os.getenv(
-        "ANALYSIS_URL",
-        "https://gemini-analysis-148167139246.europe-north2.run.app/analyze",
-    )
+    _url_env = (os.getenv("ANALYSIS_URL") or "").strip()
+    if not (_url_env.startswith("http://") or _url_env.startswith("https://")):
+        url = "https://gemini-analysis-148167139246.europe-north2.run.app/analyze"
+    else:
+        url = _url_env
     sa_email = os.getenv("TASKS_SERVICE_ACCOUNT_EMAIL") or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
     sample_size_env = os.getenv("ANALYSIS_SAMPLE_SIZE")
     try:
@@ -1017,10 +1018,11 @@ def _enqueue_music_processing_task(*, song_id: str, links: List[str]) -> None:
     project = os.getenv("GCP_PROJECT", "hugo-infrastructure")
     location = os.getenv("GCP_LOCATION", "europe-west1")
     queue = os.getenv("GCP_QUEUE", "video-cluster")
-    url = os.getenv(
-        "MUSIC_PROCESS_URL",
-        "https://music-processing-148167139246.europe-north2.run.app/process",
-    )
+    _url_env = (os.getenv("MUSIC_PROCESS_URL") or "").strip()
+    if not (_url_env.startswith("http://") or _url_env.startswith("https://")):
+        url = "https://music-processing-148167139246.europe-north2.run.app/process"
+    else:
+        url = _url_env
     sa_email = os.getenv("TASKS_SERVICE_ACCOUNT_EMAIL") or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
 
     valid_links = [link for link in links if isinstance(link, str) and link.startswith("gs://")]
@@ -1054,22 +1056,66 @@ def _enqueue_country_analysis_task(*, song_id: str, cluster: Dict[str, Any]) -> 
     project = os.getenv("GCP_PROJECT", "hugo-infrastructure")
     location = os.getenv("GCP_LOCATION", "europe-west1")
     queue = os.getenv("GCP_QUEUE", "video-cluster")
-    url = os.getenv(
-        "COUNTRY_ANALYSIS_URL",
-        "https://get-country-148167139246.europe-north2.run.app/analyze-country",
-    )
+    _url_env = (os.getenv("COUNTRY_ANALYSIS_URL") or "").strip()
+    if not (_url_env.startswith("http://") or _url_env.startswith("https://")):
+        url = "https://get-country-148167139246.europe-north2.run.app/analyze-country"
+    else:
+        url = _url_env
     sa_email = os.getenv("TASKS_SERVICE_ACCOUNT_EMAIL") or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
 
     members = (cluster or {}).get("members", [])
-    # Prefer HTTP(S) links; if not available, fall back to gs://
+
+    # Build mapping from video_id (numeric id) -> TikTok URL by pulling from Mongo
+    tiktok_links_by_id: Dict[str, str] = {}
+    try:
+        mongo_uri = MONGODB_URI_HARDCODED
+        if mongo_uri:
+            client = MongoClient(mongo_uri)
+            db = client["DATABASE"]
+            processing = db["PROCESSING_DOCS"]
+            doc = processing.find_one({"song_id": song_id}, projection={"TIKTOK_VIDEO_LINKS": 1})
+            raw_links: List[str] = (doc or {}).get("TIKTOK_VIDEO_LINKS", []) or []
+            for link in raw_links:
+                if not isinstance(link, str):
+                    continue
+                # Extract numeric id from TikTok URL: .../video/<digits>
+                match = re.search(r"/video/(\\d+)", link)
+                if match:
+                    tiktok_links_by_id[match.group(1)] = link
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to fetch TIKTOK_VIDEO_LINKS from Mongo: %s", exc)
+
+    # For each cluster member, try to map its GCS (or URL) to a TikTok URL using the numeric id
+    def _extract_numeric_id_from_gcs_or_url(value: str) -> Optional[str]:
+        if not value:
+            return None
+        # Prefer final numeric token (filestem for gs://.../<id>.mp4 or /video/<id>)
+        # Try TikTok pattern first
+        m = re.search(r"/video/(\\d+)", value)
+        if m:
+            return m.group(1)
+        # Try to pull number right before .mp4
+        m = re.search(r"(\\d+)\\.mp4$", value)
+        if m:
+            return m.group(1)
+        # Fallback: last long digit sequence in the string
+        m = re.search(r"(\\d{6,})", value)
+        return m.group(1) if m else None
+
     links: List[str] = []
     for m in members:
-        url = (m.get("url") or "").strip()
         gcs = (m.get("gcs_uri") or "").strip()
-        if url.startswith("http://") or url.startswith("https://"):
-            links.append(url)
-        elif gcs:
-            links.append(gcs)
+        url_http = (m.get("url") or "").strip()
+        candidate = url_http or gcs
+        vid = _extract_numeric_id_from_gcs_or_url(candidate)
+        if vid and vid in tiktok_links_by_id:
+            links.append(tiktok_links_by_id[vid])
+        else:
+            # If we cannot resolve to TikTok, fall back to available link (prefer HTTP)
+            if url_http.startswith("http://") or url_http.startswith("https://"):
+                links.append(url_http)
+            elif gcs:
+                links.append(gcs)
 
     if not links:
         logger.warning("No links found in cluster for country analysis; skipping task")

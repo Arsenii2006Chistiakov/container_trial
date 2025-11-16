@@ -937,11 +937,11 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                     _enqueue_analysis_task(song_id=payload.song_id, links=links_in_cluster)
                 except Exception as task_exc:  # noqa: BLE001
                     logger.exception("Failed to enqueue analysis task: %s", task_exc)
-                    # Enqueue country analysis with HTTP links if available
-                    try:
-                        _enqueue_country_analysis_task(song_id=payload.song_id, cluster=cluster)
-                    except Exception as task_exc:  # noqa: BLE001
-                        logger.exception("Failed to enqueue country analysis task: %s", task_exc)
+                # Enqueue country analysis with HTTP links if available
+                try:
+                    _enqueue_country_analysis_task(song_id=payload.song_id, cluster=cluster)
+                except Exception as task_exc:  # noqa: BLE001
+                    logger.exception("Failed to enqueue country analysis task: %s", task_exc)
                 # Enqueue music processing task if at least two valid links
                 try:
                     _enqueue_music_processing_task(song_id=payload.song_id, links=links_in_cluster)

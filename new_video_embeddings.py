@@ -915,7 +915,6 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                         "CLUSTERING_STATUS": "PROCESSED",
                         "CLUSTER_EXISTS": "EXISTS",
                         "VIDEO_EMBEDDINGS_STATUS": "PROCESSED",
-                        "cluster_summary": cluster,
                         "updated_at": time.time(),
                     }
                 }

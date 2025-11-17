@@ -1079,46 +1079,45 @@ def _enqueue_country_analysis_task(*, song_id: str, cluster: Dict[str, Any]) -> 
                 if not isinstance(link, str):
                     continue
                 # Extract numeric id from TikTok URL: .../video/<digits>
-                match = re.search(r"/video/(\\d+)", link)
+                match = re.search(r"/video/(\d+)", link)
                 if match:
                     tiktok_links_by_id[match.group(1)] = link
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to fetch TIKTOK_VIDEO_LINKS from Mongo: %s", exc)
 
-    # For each cluster member, try to map its GCS (or URL) to a TikTok URL using the numeric id
+    # For each cluster member, try to map its GCS to a TikTok URL using the numeric id
     def _extract_numeric_id_from_gcs_or_url(value: str) -> Optional[str]:
         if not value:
             return None
         # Prefer final numeric token (filestem for gs://.../<id>.mp4 or /video/<id>)
         # Try TikTok pattern first
-        m = re.search(r"/video/(\\d+)", value)
+        m = re.search(r"/video/(\d+)", value)
         if m:
             return m.group(1)
         # Try to pull number right before .mp4
-        m = re.search(r"(\\d+)\\.mp4$", value)
+        m = re.search(r"(\d+)\.mp4$", value)
         if m:
             return m.group(1)
         # Fallback: last long digit sequence in the string
-        m = re.search(r"(\\d{6,})", value)
+        m = re.search(r"(\d{6,})", value)
         return m.group(1) if m else None
 
-    links: List[str] = []
+    # Extract cluster video ids from GCS paths, then map to TikTok links
+    cluster_ids: List[str] = []
     for m in members:
-        gcs = (m.get("gcs_uri") or "").strip()
-        url_http = (m.get("url") or "").strip()
-        candidate = url_http or gcs
-        vid = _extract_numeric_id_from_gcs_or_url(candidate)
-        if vid and vid in tiktok_links_by_id:
-            links.append(tiktok_links_by_id[vid])
-        else:
-            # If we cannot resolve to TikTok, fall back to available link (prefer HTTP)
-            if url_http.startswith("http://") or url_http.startswith("https://"):
-                links.append(url_http)
-            elif gcs:
-                links.append(gcs)
+        gcs_candidate = (m.get("gcs_uri") or "").strip()
+        vid = _extract_numeric_id_from_gcs_or_url(gcs_candidate)
+        if vid:
+            cluster_ids.append(vid)
+
+    links: List[str] = []
+    for vid in cluster_ids:
+        tt = tiktok_links_by_id.get(vid)
+        if tt:
+            links.append(tt)
 
     if not links:
-        logger.warning("No links found in cluster for country analysis; skipping task")
+        logger.warning("No TikTok links matched cluster ids for country analysis; skipping task")
         return
 
     payload = {

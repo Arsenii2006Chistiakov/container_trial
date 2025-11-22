@@ -105,9 +105,11 @@ class ProcessRequest(BaseModel):
     """Incoming API payload with song id and GCS video links."""
 
     song_id: str = Field(..., min_length=1, description="Unique song identifier")
-    gcs_links: List[str] = Field(
-        ..., min_items=1, description="Collection of gs:// links to process"
-    )
+    gcs_links: List[Dict[str, Optional[str]]] = Field(
+        ...,
+        min_items=1,
+        description="Array of objects: {gcs_link: 'gs://...', tiktok_link: 'https://...'}",
+    ) # [{gcs_link:.., tiktok_link:..}, ...]
 
 
 def _chunked(items: List[Dict], chunk_size: int) -> Iterable[List[Dict]]:
@@ -203,7 +205,7 @@ class VideoEmbeddingPipeline:
         self.min_target_proportion = min_target_proportion
         self.creator_diversity_threshold = creator_diversity_threshold
 
-    def process_links(self, gcs_links: List[str]) -> Dict:
+    def process_links(self, gcs_links: List[Dict[str, Optional[str]]]) -> Dict:
         if not gcs_links:
             raise ValueError("At least one GCS link is required")
 
@@ -217,12 +219,21 @@ class VideoEmbeddingPipeline:
 
                 # Download all videos sequentially (downloads tend to be I/O bound; can be parallelized later if needed)
                 for link in gcs_links:
+                    # Backward compatibility: allow either a raw string gs:// link or a dict pair
+                    if isinstance(link, str):
+                        gcs_uri = link
+                        tiktok_link: Optional[str] = None
+                    else:
+                        gcs_uri = (link or {}).get("gcs_link") or ""
+                        tiktok_link = (link or {}).get("tiktok_link")
                     try:
-                        local_path = self.gcs_downloader.download(link, download_dir)
-                        downloaded_meta.append({"gcs_uri": link, "path": local_path})
+                        local_path = self.gcs_downloader.download(gcs_uri, download_dir)
+                        downloaded_meta.append(
+                            {"gcs_uri": gcs_uri, "tiktok_link": tiktok_link, "path": local_path}
+                        )
                     except Exception as exc:  # noqa: BLE001 - surface full context to caller
-                        logger.exception("Failed to download %s", link)
-                        download_errors.append({"gcs_uri": link, "error": str(exc)})
+                        logger.exception("Failed to download %s", gcs_uri)
+                        download_errors.append({"gcs_uri": gcs_uri, "error": str(exc)})
 
                 batches: List[Dict] = []
                 skipped_records: List[Dict[str, str]] = []
@@ -248,6 +259,7 @@ class VideoEmbeddingPipeline:
                             except Exception:
                                 break
                             gcs_uri = meta["gcs_uri"]
+                            tiktok_link = meta.get("tiktok_link")
                             try:
                                 start_time = time.time()
                                 frames = self._sample_frames(Path(meta["path"]))
@@ -262,7 +274,7 @@ class VideoEmbeddingPipeline:
                                 preproc_queue.put(
                                     {
                                         "gcs_uri": gcs_uri,
-                                        "url": gcs_uri,
+                                        "url": tiktok_link or gcs_uri,
                                         "pixel_values": pixel_values,  # CPU tensor for now
                                         "elapsed_ms_decode_pre": (time.time() - start_time) * 1000.0,
                                         "path": meta["path"],
@@ -899,10 +911,15 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
     try:
         cluster = summary.get("cluster")
         if cluster:
-            links_in_cluster = [
-                member.get("gcs_uri") or member.get("url")
+            gcs_links_in_cluster = [
+                member.get("gcs_uri")
                 for member in cluster.get("members", [])
-                if (member.get("gcs_uri") or member.get("url"))
+                if member.get("gcs_uri")
+            ]
+            tiktok_links_in_cluster = [
+                member.get("url")
+                for member in cluster.get("members", [])
+                if member.get("url")
             ]
             mongo_uri = MONGODB_URI_HARDCODED
             if mongo_uri:
@@ -918,23 +935,29 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                         "updated_at": time.time(),
                     }
                 }
-                if links_in_cluster:
-                    update_ops["$addToSet"] = {"gcs_video_links": {"$each": links_in_cluster}}
+                if gcs_links_in_cluster:
+                    update_ops["$addToSet"] = {"gcs_video_links": {"$each": gcs_links_in_cluster}}
+                if tiktok_links_in_cluster:
+                    # Track the TikTok URLs for members whose GCS videos got clustered
+                    update_ops.setdefault("$addToSet", {})
+                    existing_add = update_ops["$addToSet"]
+                    existing_add["tiktok_video_links"] = {"$each": tiktok_links_in_cluster}
                 result = processing.update_one(
                     {"song_id": payload.song_id},
                     update_ops,
                     upsert=True,
                 )
                 logger.info(
-                    "Updated PROCESSING_DOCS for song_id=%s (matched=%s, modified=%s, links=%d)",
+                    "Updated PROCESSING_DOCS for song_id=%s (matched=%s, modified=%s, gcs_links=%d, tiktok_links=%d)",
                     payload.song_id,
                     getattr(result, "matched_count", None),
                     getattr(result, "modified_count", None),
-                    len(links_in_cluster),
+                    len(gcs_links_in_cluster),
+                    len(tiktok_links_in_cluster),
                 )
                 # Enqueue downstream analysis task via Cloud Tasks
                 try:
-                    _enqueue_analysis_task(song_id=payload.song_id, links=links_in_cluster)
+                    _enqueue_analysis_task(song_id=payload.song_id, links=gcs_links_in_cluster)
                 except Exception as task_exc:  # noqa: BLE001
                     logger.exception("Failed to enqueue analysis task: %s", task_exc)
                 # Enqueue country analysis with HTTP links if available
@@ -944,7 +967,7 @@ async def process_videos(payload: ProcessRequest) -> ProcessResponse:
                     logger.exception("Failed to enqueue country analysis task: %s", task_exc)
                 # Enqueue music processing task if at least two valid links
                 try:
-                    _enqueue_music_processing_task(song_id=payload.song_id, links=links_in_cluster)
+                    _enqueue_music_processing_task(song_id=payload.song_id, links=gcs_links_in_cluster)
                 except Exception as task_exc:  # noqa: BLE001
                     logger.exception("Failed to enqueue music processing task: %s", task_exc)
             else:
